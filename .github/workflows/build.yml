@@ -1,38 +1,107 @@
 name: Build
-on: 
+
+on:
   push:
-    branches:
-      - master
+    branches: [lg-g8-arduinopanda]
   workflow_dispatch:
-    inputs:
-      name:
-        description: 'trigger to build'
-        required: true
-        default: 'run'
+
 jobs:
   build:
     runs-on: ubuntu-24.04
+
     steps:
-    - name: Check out repository code
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         submodules: true
 
+    # Cache the `builder` Docker image (apt install + pip + capnproto-java build).
+    # Invalidates when the Dockerfile or any file copied into the image changes.
+    - name: Cache Docker builder image
+      id: cache-docker
+      uses: actions/cache@v4
+      with:
+        path: /tmp/docker-builder.tar
+        key: ${{ runner.os }}-docker-builder-${{ hashFiles('docker/Dockerfile', 'docker/capnproto-java/**') }}
+
+    - name: Load cached Docker image
+      if: steps.cache-docker.outputs.cache-hit == 'true'
+      run: docker load --input /tmp/docker-builder.tar
+
     - name: Build Docker image
+      if: steps.cache-docker.outputs.cache-hit != 'true'
       run: |
         ./build_env.sh
+        docker save builder -o /tmp/docker-builder.tar
 
-    - name: Build apk
+    # Buildozer cache — Android SDK, NDK r28c, and python deps (multi-GB).
+    # Mounted into the container at /root/.buildozer by build.sh.
+    # Keyed on buildozer.spec since that controls SDK/NDK/requirement versions.
+    - name: Cache buildozer (Android SDK/NDK + python deps)
+      uses: actions/cache@v4
+      with:
+        path: cache/buildozer
+        key: ${{ runner.os }}-buildozer-${{ hashFiles('flowy/buildozer.spec') }}
+        restore-keys: |
+          ${{ runner.os }}-buildozer-
+
+    # Gradle dependency cache — mounted into the container at /root/.gradle by build.sh.
+    # Caching ~/.gradle on the runner host is useless since gradle runs in Docker.
+    - name: Cache Gradle dependencies (in-container ~/.gradle)
+      uses: actions/cache@v4
+      with:
+        path: cache/gradle
+        key: ${{ runner.os }}-gradle-deps-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'cereal/**/*.gradle', 'common/**/*.gradle', 'flowy/**/*.gradle', 'selfdrive/**/*.gradle', 'system/**/*.gradle', 'gradle/wrapper/gradle-wrapper.properties', 'selfdrive/sensord/gradle/wrapper/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-deps-
+
+    # Local buildozer state — `build.sh` checks `flowy/.buildozer` to decide
+    # whether to run the slow first-time build. Cache flowy/bin so the AAR
+    # survives between runs.
+    - name: Cache flowy buildozer state and AAR output
+      uses: actions/cache@v4
+      with:
+        path: |
+          flowy/.buildozer
+          flowy/bin
+        key: ${{ runner.os }}-flowy-${{ hashFiles('flowy/buildozer.spec', 'flowy/src/**', 'flowy/recipes/**') }}
+        restore-keys: |
+          ${{ runner.os }}-flowy-
+
+    # Gradle build outputs (incremental compilation state).
+    - name: Cache Android gradle build outputs
+      uses: actions/cache@v4
+      with:
+        path: |
+          android/.gradle
+          android/build
+        key: ${{ runner.os }}-android-build-${{ hashFiles('android/**/*.gradle', 'android/**/*.gradle.kts', 'android/AndroidManifest.xml', 'android/project.properties', 'android/src/**', 'android/res/**') }}
+        restore-keys: |
+          ${{ runner.os }}-android-build-
+
+    # SCons signature DB — enables incremental native builds across CI runs.
+    - name: Cache SCons signature DB
+      uses: actions/cache@v4
+      with:
+        path: .sconsign.dblite
+        key: ${{ runner.os }}-sconsign-${{ hashFiles('SConstruct', 'SConscript', 'cereal/**/SConscript', 'common/**/SConscript', 'opendbc/**/SConscript', 'panda/**/SConscript', 'selfdrive/**/SConscript', 'system/**/SConscript', 'third_party/**/SConscript', 'wrappers/**/SConscript') }}
+        restore-keys: |
+          ${{ runner.os }}-sconsign-
+
+    - name: Build Docker image (ensure available)
+      run: docker image inspect builder >/dev/null 2>&1 || ./build_env.sh
+
+    - name: Build APK
       run: |
-        ./build.sh full
+        ./build.sh clean
 
-    - name: Archive apk
+    - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
         name: android-release.apk
         path: android/build/outputs/apk/release/android-release.apk
 
-    - name: Archive libs
+    - name: Upload libs
       uses: actions/upload-artifact@v4
       with:
         name: libs
