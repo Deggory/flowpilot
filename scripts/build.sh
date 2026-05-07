@@ -25,8 +25,8 @@ build_scons() {
   cd -
 
   # Build openpilot
-  scons . -j$(nproc)
-  
+  scons .
+
   # Move libs
   cp third_party/libusb/android/libs/arm64-v8a/libusb-1.0.so android/libs/arm64-v8a
   cp third_party/lmdb/liblmdb.so android/libs/arm64-v8a
@@ -41,7 +41,8 @@ build_scons() {
 # Function to build the app
 build_app() {
   echo "Building the app..."
-  ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk" ./gradlew assembleRelease --configure-on-demand --daemon}
+  ANDROID_HOME="$HOME/.buildozer/android/platform/android-sdk" ./gradlew assembleRelease
+}
 
 # Function to build everything
 build_full() {
